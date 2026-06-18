@@ -1,0 +1,8 @@
+{
+  "name": "YT Downloader",
+  "description": "YouTube video downloader with batch support, resolution selection, and account syncing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
