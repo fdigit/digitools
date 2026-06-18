@@ -55,7 +55,6 @@ async function startServer() {
       noCheckCertificate: true,
       youtubeSkipDashManifest: true,
       extractorArgs: 'youtube:player_client=android_creator,android,tv,web',
-      forceIpv6: true,
       cacheDir: OAUTH_CACHE_DIR,
     };
     
