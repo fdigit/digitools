@@ -1,24 +1,32 @@
 import express from 'express';
 import path from 'path';
-
+import fs from 'fs';
 import cors from 'cors';
-import ytdl from '@distube/ytdl-core';
 import youtubedl from 'youtube-dl-exec';
+
+const COOKIE_FILE_PATH = path.join(process.cwd(), 'youtube-cookies.txt');
+
+function createNetscapeCookieFile(rawCookie: string) {
+  const header = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n# This is a generated file! Do not edit.\n\n";
+  const lines = rawCookie.split(';').map(cookie => {
+    const parts = cookie.trim().split('=');
+    const name = parts[0];
+    const value = parts.slice(1).join('=');
+    if (!name) return '';
+    return `.youtube.com\tTRUE\t/\tTRUE\t2147483647\t${name}\t${value}`;
+  }).filter(line => line.length > 0).join('\n');
+  
+  fs.writeFileSync(COOKIE_FILE_PATH, header + lines);
+  console.log('Successfully generated Netscape cookie file for yt-dlp.');
+}
 
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
 
-  let ytdlAgent: ytdl.Agent | undefined;
   if (process.env.YOUTUBE_COOKIE) {
     try {
-      const cookieString = process.env.YOUTUBE_COOKIE;
-      const cookies = cookieString.split(';').map(c => {
-        const [name, ...rest] = c.trim().split('=');
-        return { name, value: rest.join('='), domain: '.youtube.com', path: '/' };
-      });
-      ytdlAgent = ytdl.createAgent(cookies);
-      console.log('Successfully loaded YouTube cookies');
+      createNetscapeCookieFile(process.env.YOUTUBE_COOKIE);
     } catch (e) {
       console.error('Failed to parse YOUTUBE_COOKIE', e);
     }
@@ -26,6 +34,20 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
+
+  // Helper to build yt-dlp options securely
+  const getBaseOptions = () => {
+    const options: any = {
+      noWarnings: true,
+      noCallHome: true,
+      noCheckCertificate: true,
+      youtubeSkipDashManifest: true,
+    };
+    if (fs.existsSync(COOKIE_FILE_PATH)) {
+      options.cookies = COOKIE_FILE_PATH;
+    }
+    return options;
+  };
 
   // API Route to fetch video info
   app.get('/api/info', async (req, res) => {
@@ -35,22 +57,30 @@ async function startServer() {
         return res.status(400).json({ error: 'Invalid YouTube URL' });
       }
 
-      const info = await ytdl.getInfo(url, { agent: ytdlAgent });
+      console.log(`Fetching info for ${url}...`);
+      const info: any = await youtubedl(url, {
+        dumpSingleJson: true,
+        ...getBaseOptions()
+      });
       
-      const audioFormats = info.formats
-        .filter((f: any) => !f.hasVideo && f.hasAudio)
-        .sort((a: any, b: any) => (b.audioBitrate || 0) - (a.audioBitrate || 0));
+      const ytFormats = info.formats || [];
+      
+      // Find highest bitrate audio-only format
+      const audioFormats = ytFormats
+        .filter((f: any) => f.vcodec === 'none' && f.acodec !== 'none')
+        .sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
 
       const bestAudio = audioFormats[0];
       
-      const formats = info.formats
-        .filter((f: any) => f.hasVideo && f.hasAudio)
+      // Find formats that contain both video and audio out-of-the-box
+      const formats = ytFormats
+        .filter((f: any) => f.vcodec !== 'none' && f.acodec !== 'none')
         .map((f: any) => ({
-          itag: f.itag,
-          qualityLabel: f.qualityLabel || `${f.height}p`,
-          container: f.container,
-          hasAudio: f.hasAudio,
-          contentLength: f.contentLength || '0'
+          itag: f.format_id,
+          qualityLabel: f.format_note || (f.height ? `${f.height}p` : 'Unknown'),
+          container: f.ext,
+          hasAudio: true,
+          contentLength: (f.filesize || f.filesize_approx || '0').toString()
         }));
         
       if (bestAudio) {
@@ -59,20 +89,30 @@ async function startServer() {
           qualityLabel: 'Audio Only',
           container: 'mp3',
           hasAudio: true,
-          contentLength: bestAudio.contentLength || '0'
+          contentLength: (bestAudio.filesize || bestAudio.filesize_approx || '0').toString()
         });
       }
 
       res.json({
-        title: info.videoDetails.title,
-        author: info.videoDetails.author.name || 'Unknown',
-        thumbnail: info.videoDetails.thumbnails[0]?.url || '',
-        lengthSeconds: info.videoDetails.lengthSeconds,
+        title: info.title,
+        author: info.uploader || 'Unknown',
+        thumbnail: info.thumbnail || '',
+        lengthSeconds: (info.duration || 0).toString(),
         formats: formats.reverse()
       });
     } catch (err: any) {
       console.error('Error fetching video info:', err.message);
-      res.status(500).json({ error: err.message || 'Failed to fetch video info. It might be restricted.' });
+      
+      // Specifically extract the yt-dlp error string to make it readable
+      let errorMessage = 'Failed to fetch video info.';
+      if (err.stderr) {
+         const match = err.stderr.match(/ERROR: (.*)/);
+         if (match) errorMessage = match[1];
+      } else if (err.message) {
+         errorMessage = err.message;
+      }
+      
+      res.status(500).json({ error: errorMessage });
     }
   });
 
@@ -86,15 +126,16 @@ async function startServer() {
         return res.status(400).send('Invalid YouTube URL');
       }
 
-      const info = await ytdl.getInfo(url, { agent: ytdlAgent });
-      const title = info.videoDetails.title.replace(/[^\w\s-]/g, '');
+      console.log(`Starting download for ${url} (itag: ${itag})`);
+      
+      // Quickly get title for the filename
+      const info: any = await youtubedl(url, {
+        dumpSingleJson: true,
+        ...getBaseOptions()
+      });
+      const title = info.title.replace(/[^\w\s-]/g, '');
 
       let subprocess;
-
-      const ytdlpOptions: any = {};
-      if (process.env.YOUTUBE_COOKIE) {
-        ytdlpOptions.addHeader = [`Cookie: ${process.env.YOUTUBE_COOKIE}`];
-      }
 
       if (itag === 'audio-only') {
         res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
@@ -105,21 +146,16 @@ async function startServer() {
           extractAudio: true,
           audioFormat: 'mp3',
           output: '-', // stdout
-          ...ytdlpOptions
+          ...getBaseOptions()
         });
       } else {
         res.setHeader('Content-Disposition', `attachment; filename="${title}.mp4"`);
         res.setHeader('Content-Type', 'video/mp4');
-        
-        const format = ytdl.chooseFormat(info.formats, { quality: itag });
-        if (format && format.contentLength) {
-          res.setHeader('Content-Length', format.contentLength);
-        }
 
         subprocess = youtubedl.exec(url, {
           format: itag || 'best',
           output: '-', // stdout
-          ...ytdlpOptions
+          ...getBaseOptions()
         });
       }
 
@@ -143,8 +179,6 @@ async function startServer() {
       res.status(500).json({ error: err.message || 'Download failed' });
     }
   });
-
-  // API is now standalone; frontend is hosted separately on Vercel.
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
