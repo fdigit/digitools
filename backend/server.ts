@@ -26,6 +26,12 @@ function createNetscapeCookieFile(rawCookie: string) {
   console.log('Successfully generated Netscape cookie file for yt-dlp. Total cookies parsed:', lines.split('\n').length);
 }
 
+const OAUTH_CACHE_DIR = path.join(process.cwd(), '.yt-dlp-cache');
+let activeAuthProcess: any = null;
+let authStatus: 'none' | 'pending' | 'completed' | 'failed' = 'none';
+let authCode = '';
+let authUrl = '';
+
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT || 3000;
@@ -50,12 +56,94 @@ async function startServer() {
       youtubeSkipDashManifest: true,
       extractorArgs: 'youtube:player_client=android_creator,android,tv,web',
       forceIpv6: true,
+      cacheDir: OAUTH_CACHE_DIR,
     };
-    if (fs.existsSync(COOKIE_FILE_PATH)) {
+    
+    // Check if OAuth token exists
+    const oauthCachePath = path.join(OAUTH_CACHE_DIR, 'youtube-oauth2');
+    const isOAuthAuthenticated = fs.existsSync(oauthCachePath) && fs.readdirSync(oauthCachePath).length > 0;
+    
+    if (isOAuthAuthenticated || authStatus === 'completed') {
+      options.username = 'oauth2';
+      options.password = '';
+    } else if (fs.existsSync(COOKIE_FILE_PATH)) {
       options.cookies = COOKIE_FILE_PATH;
     }
     return options;
   };
+
+  // API Route to initiate OAuth2 Device flow
+  app.post('/api/auth/init', (req, res) => {
+    if (activeAuthProcess && authCode) {
+      return res.json({ status: 'pending', code: authCode, url: authUrl });
+    }
+    
+    authStatus = 'pending';
+    authCode = '';
+    authUrl = '';
+    
+    try {
+      activeAuthProcess = youtubedl.exec('https://www.youtube.com/watch?v=dQw4w9WgXcQ', {
+        username: 'oauth2',
+        password: '',
+        dumpJson: true,
+        cacheDir: OAUTH_CACHE_DIR,
+        noWarnings: true,
+      });
+      
+      activeAuthProcess.stderr?.on('data', (data: Buffer) => {
+        const output = data.toString();
+        console.log('Auth output:', output);
+        
+        const codeMatch = output.match(/code\s+([\w-]+)/i);
+        const urlMatch = output.match(/go to\s+(https:\/\/[^\s]+)/i);
+        
+        if (codeMatch && urlMatch) {
+          authCode = codeMatch[1];
+          authUrl = urlMatch[1];
+        }
+      });
+      
+      activeAuthProcess.on('close', (code: number) => {
+        activeAuthProcess = null;
+        if (code === 0) {
+          authStatus = 'completed';
+        } else {
+          authStatus = 'failed';
+        }
+      });
+      
+      let attempts = 0;
+      const interval = setInterval(() => {
+        if (authCode) {
+          clearInterval(interval);
+          return res.json({ status: 'pending', code: authCode, url: authUrl });
+        }
+        if (authStatus === 'failed' || attempts > 30) { // wait up to 15 seconds
+          clearInterval(interval);
+          return res.status(500).json({ error: 'Failed to generate OAuth code from yt-dlp.' });
+        }
+        attempts++;
+      }, 500);
+      
+    } catch (e: any) {
+      authStatus = 'failed';
+      activeAuthProcess = null;
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // API Route to check OAuth2 status
+  app.get('/api/auth/status', (req, res) => {
+    const oauthCachePath = path.join(OAUTH_CACHE_DIR, 'youtube-oauth2');
+    const hasToken = fs.existsSync(oauthCachePath) && fs.readdirSync(oauthCachePath).length > 0;
+    
+    if (hasToken) {
+      authStatus = 'completed';
+    }
+    
+    res.json({ status: authStatus, code: authCode, url: authUrl, hasToken });
+  });
 
   // API Route to debug the environment and cookie parsing
   app.get('/api/test-env', async (req, res) => {

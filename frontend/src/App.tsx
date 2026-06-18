@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Progress } from './components/ui/progress';
 import { Switch } from './components/ui/switch';
 import { Label } from './components/ui/label';
-import { Trash2, DownloadCloud, Moon, Sun, Monitor, AlertCircle, PlusCircle, CheckCircle2, Cloud, Download, Github } from 'lucide-react';
+import { Trash2, DownloadCloud, Moon, Sun, Monitor, AlertCircle, PlusCircle, CheckCircle2, Cloud, Download, Github, Key } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import {
   DropdownMenu,
@@ -71,6 +71,71 @@ function AccountSync() {
 export default function App() {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
   const [urlInput, setUrlInput] = useState('');
+  
+  // Auth State
+  const [authStatus, setAuthStatus] = useState<'checking' | 'completed' | 'none'>('checking');
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [authCode, setAuthCode] = useState('');
+  const [authUrl, setAuthUrl] = useState('');
+
+  // Check auth status on load
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const apiUrl = import.meta.env.VITE_API_URL || '';
+        const res = await fetch(`${apiUrl}/api/auth/status`);
+        const data = await res.json();
+        if (data.status === 'completed' || data.hasToken) {
+          setAuthStatus('completed');
+        } else {
+          setAuthStatus('none');
+        }
+      } catch (e) {
+        setAuthStatus('none');
+      }
+    };
+    checkStatus();
+  }, []);
+
+  // Poll auth status while modal is open
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isAuthModalOpen && authStatus !== 'completed') {
+      interval = setInterval(async () => {
+        try {
+          const apiUrl = import.meta.env.VITE_API_URL || '';
+          const res = await fetch(`${apiUrl}/api/auth/status`);
+          const data = await res.json();
+          if (data.status === 'completed' || data.hasToken) {
+            setAuthStatus('completed');
+            setIsAuthModalOpen(false);
+            toast.success('Server Successfully Authenticated!');
+          }
+        } catch (e) {}
+      }, 3000);
+    }
+    return () => clearInterval(interval);
+  }, [isAuthModalOpen, authStatus]);
+
+  const handleInitiateAuth = async () => {
+    setIsAuthModalOpen(true);
+    setAuthCode('');
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${apiUrl}/api/auth/init`, { method: 'POST' });
+      const data = await res.json();
+      if (data.code) {
+        setAuthCode(data.code);
+        setAuthUrl(data.url || 'https://www.google.com/device');
+      } else {
+        toast.error('Failed to generate code.');
+        setIsAuthModalOpen(false);
+      }
+    } catch (e: any) {
+      toast.error(`Error initiating auth: ${e.message}`);
+      setIsAuthModalOpen(false);
+    }
+  };
 
   // When a URL is added, fetch info
   const handleAddUrl = async (e: React.FormEvent) => {
@@ -207,6 +272,17 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4 sm:gap-6">
+            {authStatus !== 'checking' && (
+              <Button 
+                onClick={authStatus === 'completed' ? undefined : handleInitiateAuth} 
+                variant="outline" 
+                size="sm" 
+                className={`hidden sm:flex text-xs h-8 font-semibold ${authStatus === 'completed' ? 'border-green-500/30 text-green-400 bg-green-500/10 cursor-default hover:bg-green-500/10 hover:text-green-400' : 'border-yellow-500/30 text-yellow-400 bg-yellow-500/10 hover:bg-yellow-500/20 hover:text-yellow-300'}`}
+              >
+                <Key className="mr-2 h-3 w-3" />
+                {authStatus === 'completed' ? 'Server Authenticated' : 'Authenticate Server'}
+              </Button>
+            )}
             <AccountSync />
             <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="hidden sm:flex text-muted-foreground hover:text-foreground transition-colors">
               <Github className="h-5 w-5" />
@@ -214,6 +290,47 @@ export default function App() {
             <ThemeToggle />
           </div>
         </header>
+
+        {/* Auth Modal Overlay */}
+        {isAuthModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <Card className="w-full max-w-md bg-[#111] border-white/10 shadow-2xl">
+              <CardHeader>
+                <CardTitle className="text-xl font-bold flex items-center gap-2">
+                  <Key className="text-yellow-500 h-5 w-5" />
+                  Authenticate Server
+                </CardTitle>
+                <CardDescription className="text-white/60">
+                  Because Render uses shared datacenter IPs, YouTube requires this server to log in as a Smart TV to prove it's not a bot.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {!authCode ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500"></div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="bg-black border border-white/5 rounded-xl p-4 text-center space-y-2">
+                      <p className="text-sm text-white/50">Visit this URL on your phone or computer:</p>
+                      <a href={authUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 font-bold hover:underline block truncate">
+                        {authUrl}
+                      </a>
+                    </div>
+                    <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6 text-center space-y-2">
+                      <p className="text-sm text-yellow-500/70 uppercase tracking-widest font-bold">Enter Code</p>
+                      <p className="text-4xl font-black text-yellow-400 tracking-wider font-mono">{authCode}</p>
+                    </div>
+                    <p className="text-xs text-center text-white/40 animate-pulse">Waiting for approval...</p>
+                  </>
+                )}
+              </CardContent>
+              <CardFooter className="flex justify-end border-t border-white/5 pt-4">
+                <Button variant="ghost" onClick={() => setIsAuthModalOpen(false)}>Cancel</Button>
+              </CardFooter>
+            </Card>
+          </div>
+        )}
 
         {/* Main Content */}
         <main className="relative z-10 flex-1 w-full max-w-4xl mx-auto px-4 py-12 space-y-8">
