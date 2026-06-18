@@ -4,11 +4,10 @@ import { useTheme } from 'next-themes';
 import { DownloadTask, VideoInfo } from './types';
 import { Button } from './components/ui/button';
 import { Input } from './components/ui/input';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from './components/ui/card';
-import { Progress } from './components/ui/progress';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card';
 import { Switch } from './components/ui/switch';
 import { Label } from './components/ui/label';
-import { Trash2, DownloadCloud, Moon, Sun, Monitor, AlertCircle, PlusCircle, CheckCircle2, Cloud, Download, Github, Key } from 'lucide-react';
+import { Trash2, DownloadCloud, Moon, Sun, AlertCircle, PlusCircle, Cloud, Download, Github } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import {
   DropdownMenu,
@@ -18,7 +17,7 @@ import {
 } from "./components/ui/dropdown-menu"
 
 function ThemeToggle() {
-  const { setTheme, theme } = useTheme();
+  const { setTheme } = useTheme();
 
   return (
     <DropdownMenu>
@@ -41,7 +40,6 @@ function AccountSync() {
   const [isSynced, setIsSynced] = useState(false);
 
   useEffect(() => {
-    // Load preference from local storage to mock "login"
     const synced = localStorage.getItem('yt_account_sync');
     if (synced === 'true') {
       setIsSynced(true);
@@ -71,73 +69,8 @@ function AccountSync() {
 export default function App() {
   const [tasks, setTasks] = useState<DownloadTask[]>([]);
   const [urlInput, setUrlInput] = useState('');
-  
-  // Auth State
-  const [authStatus, setAuthStatus] = useState<'checking' | 'completed' | 'none'>('checking');
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [authCode, setAuthCode] = useState('');
-  const [authUrl, setAuthUrl] = useState('');
 
-  // Check auth status on load
-  useEffect(() => {
-    const checkStatus = async () => {
-      try {
-        const apiUrl = import.meta.env.VITE_API_URL || '';
-        const res = await fetch(`${apiUrl}/api/auth/status`);
-        const data = await res.json();
-        if (data.status === 'completed' || data.hasToken) {
-          setAuthStatus('completed');
-        } else {
-          setAuthStatus('none');
-        }
-      } catch (e) {
-        setAuthStatus('none');
-      }
-    };
-    checkStatus();
-  }, []);
-
-  // Poll auth status while modal is open
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isAuthModalOpen && authStatus !== 'completed') {
-      interval = setInterval(async () => {
-        try {
-          const apiUrl = import.meta.env.VITE_API_URL || '';
-          const res = await fetch(`${apiUrl}/api/auth/status`);
-          const data = await res.json();
-          if (data.status === 'completed' || data.hasToken) {
-            setAuthStatus('completed');
-            setIsAuthModalOpen(false);
-            toast.success('Server Successfully Authenticated!');
-          }
-        } catch (e) {}
-      }, 3000);
-    }
-    return () => clearInterval(interval);
-  }, [isAuthModalOpen, authStatus]);
-
-  const handleInitiateAuth = async () => {
-    setIsAuthModalOpen(true);
-    setAuthCode('');
-    try {
-      const apiUrl = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${apiUrl}/api/auth/init`, { method: 'POST' });
-      const data = await res.json();
-      if (data.code) {
-        setAuthCode(data.code);
-        setAuthUrl(data.url || 'https://www.google.com/device');
-      } else {
-        toast.error('Failed to generate code.');
-        setIsAuthModalOpen(false);
-      }
-    } catch (e: any) {
-      toast.error(`Error initiating auth: ${e.message}`);
-      setIsAuthModalOpen(false);
-    }
-  };
-
-  // When a URL is added, fetch info
+  // When a URL is added, fetch info via our backend's oEmbed proxy
   const handleAddUrl = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!urlInput.trim()) return;
@@ -164,12 +97,9 @@ export default function App() {
       
       setTasks(prev => prev.map(t => {
         if (t.id === newId) {
-          // Default select the best available quality
-          const bestFormat = data.formats[0];
           return {
             ...t,
             videoInfo: data,
-            selectedItag: bestFormat?.itag,
             status: 'ready'
           };
         }
@@ -184,68 +114,6 @@ export default function App() {
         return t;
       }));
       toast.error(`Error processing video: ${err.message}`);
-    }
-  };
-
-  const handleDownload = async (task: DownloadTask) => {
-    if (!task.selectedItag) return;
-    
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'downloading', progress: 10 } : t));
-
-    try {
-      // Create a simulated progress effect since actual download progress from browser fetch is complex
-      const apiUrl = import.meta.env.VITE_API_URL || '';
-      const res = await fetch(`${apiUrl}/api/download?url=${encodeURIComponent(task.url)}&itag=${task.selectedItag}`);
-      
-      if (!res.ok) {
-        throw new Error('Download failed on server');
-      }
-
-      const contentLength = res.headers.get('content-length');
-      const total = contentLength ? parseInt(contentLength, 10) : 0;
-      
-      let loaded = 0;
-      
-      const reader = res.body?.getReader();
-      const stream = new ReadableStream({
-        async start(controller) {
-          while (true) {
-            const { done, value } = await reader!.read();
-            if (done) break;
-            
-            loaded += value.byteLength;
-            if (total) {
-              const currentProgress = Math.round((loaded / total) * 100);
-              // Throttle UI updates in a real app, here we just set it
-              setTasks(prev => prev.map(t => t.id === task.id ? { ...t, progress: currentProgress } : t));
-            }
-            
-            controller.enqueue(value);
-          }
-          controller.close();
-          reader!.releaseLock();
-        }
-      });
-
-      const responseStream = new Response(stream);
-      const blob = await responseStream.blob();
-      const blobUrl = URL.createObjectURL(blob);
-
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'completed', progress: 100, blobUrl } : t));
-
-      // Auto trigger download
-      const title = task.videoInfo?.title.replace(/[^\w\s-]/g, '') || 'video';
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `${title}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      toast.success('Download completed!');
-
-    } catch (err: any) {
-      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'error', error: err.message } : t));
-      toast.error('Download failed');
     }
   };
 
@@ -272,17 +140,6 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4 sm:gap-6">
-            {authStatus !== 'checking' && (
-              <Button 
-                onClick={authStatus === 'completed' ? undefined : handleInitiateAuth} 
-                variant="outline" 
-                size="sm" 
-                className={`hidden sm:flex text-xs h-8 font-semibold ${authStatus === 'completed' ? 'border-green-500/30 text-green-400 bg-green-500/10 cursor-default hover:bg-green-500/10 hover:text-green-400' : 'border-yellow-500/30 text-yellow-400 bg-yellow-500/10 hover:bg-yellow-500/20 hover:text-yellow-300'}`}
-              >
-                <Key className="mr-2 h-3 w-3" />
-                {authStatus === 'completed' ? 'Server Authenticated' : 'Authenticate Server'}
-              </Button>
-            )}
             <AccountSync />
             <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="hidden sm:flex text-muted-foreground hover:text-foreground transition-colors">
               <Github className="h-5 w-5" />
@@ -291,47 +148,6 @@ export default function App() {
           </div>
         </header>
 
-        {/* Auth Modal Overlay */}
-        {isAuthModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <Card className="w-full max-w-md bg-[#111] border-white/10 shadow-2xl">
-              <CardHeader>
-                <CardTitle className="text-xl font-bold flex items-center gap-2">
-                  <Key className="text-yellow-500 h-5 w-5" />
-                  Authenticate Server
-                </CardTitle>
-                <CardDescription className="text-white/60">
-                  Because Render uses shared datacenter IPs, YouTube requires this server to log in as a Smart TV to prove it's not a bot.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {!authCode ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-red-500"></div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="bg-black border border-white/5 rounded-xl p-4 text-center space-y-2">
-                      <p className="text-sm text-white/50">Visit this URL on your phone or computer:</p>
-                      <a href={authUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 font-bold hover:underline block truncate">
-                        {authUrl}
-                      </a>
-                    </div>
-                    <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-xl p-6 text-center space-y-2">
-                      <p className="text-sm text-yellow-500/70 uppercase tracking-widest font-bold">Enter Code</p>
-                      <p className="text-4xl font-black text-yellow-400 tracking-wider font-mono">{authCode}</p>
-                    </div>
-                    <p className="text-xs text-center text-white/40 animate-pulse">Waiting for approval...</p>
-                  </>
-                )}
-              </CardContent>
-              <CardFooter className="flex justify-end border-t border-white/5 pt-4">
-                <Button variant="ghost" onClick={() => setIsAuthModalOpen(false)}>Cancel</Button>
-              </CardFooter>
-            </Card>
-          </div>
-        )}
-
         {/* Main Content */}
         <main className="relative z-10 flex-1 w-full max-w-4xl mx-auto px-4 py-12 space-y-8">
           
@@ -339,7 +155,7 @@ export default function App() {
           <Card className="bg-white/5 border border-white/10 rounded-3xl p-4 sm:p-8 backdrop-blur-xl shadow-2xl flex flex-col justify-center">
             <CardHeader className="pb-6 px-0 text-center">
               <CardTitle className="text-3xl font-light text-white mb-2">Convert <span className="font-semibold italic text-red-500">Any</span> Video</CardTitle>
-              <CardDescription className="text-white/40 mb-2 max-w-md mx-auto text-sm leading-relaxed">Enter a URL to fetch video qualities and download as MP4. Add multiple for batching.</CardDescription>
+              <CardDescription className="text-white/40 mb-2 max-w-md mx-auto text-sm leading-relaxed">Enter a URL to fetch video details and download directly from reliable third-party servers.</CardDescription>
             </CardHeader>
             <CardContent className="px-0">
               <form onSubmit={handleAddUrl} className="relative flex flex-col sm:flex-row gap-3 items-center w-full">
@@ -418,60 +234,20 @@ export default function App() {
                           <AlertCircle className="w-5 h-5 shrink-0" />
                           <p className="text-[10px] sm:text-xs font-bold truncate">{task.error}</p>
                         </div>
-                      ) : task.status === 'downloading' ? (
-                        <div className="space-y-2 mt-2">
-                          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.5)] transition-all duration-300" 
-                              style={{ width: `${task.progress}%` }}
-                            />
-                          </div>
-                          <div className="flex justify-between mt-2">
-                            <span className="text-[10px] text-red-500 font-bold tracking-tighter">DOWNLOADING {task.progress}%</span>
-                          </div>
-                        </div>
-                      ) : task.status === 'completed' ? (
-                        <div className="bg-green-500/5 border border-green-500/10 rounded-2xl p-4 flex justify-between items-center text-green-500 font-medium w-full mt-2">
-                          <div className="flex items-center gap-3">
-                            <CheckCircle2 className="h-4 w-4 shrink-0" />
-                            <span className="text-[10px] text-green-500/50 uppercase font-bold tracking-tighter">Completed</span>
-                          </div>
-                          <a href={task.blobUrl} download={`${task.videoInfo?.title.replace(/[^\w\s-]/g, '') || 'video'}.mp4`}>
-                            <Button variant="outline" size="sm" className="h-8 text-xs bg-black/40 text-white/80 border-white/10 hover:bg-white/10">Save Again</Button>
-                          </a>
-                        </div>
                       ) : task.status === 'ready' && task.videoInfo ? (
                         <div className="flex flex-col sm:flex-row items-center gap-4 mt-2">
-                          <div className="flex-1 w-full flex flex-col gap-2">
-                            <Label className="text-[10px] uppercase tracking-widest text-white/40 font-bold ml-1">Resolution Quality</Label>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger className="inline-flex h-9 items-center justify-between rounded-md border border-white/5 bg-white/5 px-4 py-2 text-xs text-white hover:bg-white/10 transition-colors w-full">
-                                  {task.selectedItag 
-                                    ? task.videoInfo.formats.find(f => f.itag === task.selectedItag)?.qualityLabel 
-                                    : "Select resolution"}
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent className="w-[200px] border-white/10 bg-black/90 text-white backdrop-blur-xl">
-                                {task.videoInfo.formats.map(f => (
-                                  <DropdownMenuItem 
-                                    key={f.itag}
-                                    onClick={() => setTasks(prev => prev.map(t => t.id === task.id ? { ...t, selectedItag: f.itag } : t))}
-                                    className={`${task.selectedItag === f.itag ? "bg-white/10 font-bold" : "text-white/60"} focus:bg-white/20`}
-                                  >
-                                    {f.qualityLabel} {f.hasAudio ? '' : '(No Audio)'} 
-                                  </DropdownMenuItem>
-                                ))}
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                          
-                          <Button 
-                            className="w-full sm:w-auto py-3 bg-red-600/20 rounded-xl text-xs font-semibold border border-red-500/30 text-red-400 hover:bg-red-600/40 transition-all h-10 mt-auto"
-                            disabled={!task.selectedItag}
-                            onClick={() => handleDownload(task)}
-                          >
-                            <Download className="mr-2 h-4 w-4" />
-                            Start Download
-                          </Button>
+                          <a href={`https://cobalt.tools/?u=${encodeURIComponent(task.url)}`} target="_blank" rel="noopener noreferrer" className="w-full">
+                            <Button className="w-full py-3 bg-blue-600/20 rounded-xl text-xs font-semibold border border-blue-500/30 text-blue-400 hover:bg-blue-600/40 transition-all h-10">
+                              <DownloadCloud className="mr-2 h-4 w-4" />
+                              Download with Cobalt (Ad-Free)
+                            </Button>
+                          </a>
+                          <a href={`https://ssyoutube.com/en183x/youtube-video-downloader?url=${encodeURIComponent(task.url)}`} target="_blank" rel="noopener noreferrer" className="w-full">
+                            <Button className="w-full py-3 bg-red-600/20 rounded-xl text-xs font-semibold border border-red-500/30 text-red-400 hover:bg-red-600/40 transition-all h-10">
+                              <Download className="mr-2 h-4 w-4" />
+                              Download with SaveFrom
+                            </Button>
+                          </a>
                         </div>
                       ) : null}
                     </CardContent>
