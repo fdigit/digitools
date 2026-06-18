@@ -3,14 +3,12 @@ import fs from 'fs';
 
 async function run() {
   try {
-    const stream = await play.stream('https://www.youtube.com/watch?v=dQw4w9WgXcQ', {
-      quality: 2 // Highest quality
-    });
+    const stream = await play.stream('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
     
     console.log('Stream type:', stream.type);
     
     // Pipe to a file just to verify it streams
-    const out = fs.createWriteStream('test.mp4');
+    const out = fs.createWriteStream('test2.webm');
     stream.stream.pipe(out);
     
     setTimeout(() => {
