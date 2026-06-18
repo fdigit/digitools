@@ -42,6 +42,7 @@ async function startServer() {
       noCallHome: true,
       noCheckCertificate: true,
       youtubeSkipDashManifest: true,
+      extractorArgs: 'youtube:player_client=android',
     };
     if (fs.existsSync(COOKIE_FILE_PATH)) {
       options.cookies = COOKIE_FILE_PATH;
