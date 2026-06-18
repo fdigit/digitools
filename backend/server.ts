@@ -7,17 +7,23 @@ import youtubedl from 'youtube-dl-exec';
 const COOKIE_FILE_PATH = path.join(process.cwd(), 'youtube-cookies.txt');
 
 function createNetscapeCookieFile(rawCookie: string) {
+  // Strip user copy-paste prefixes like "YOUTUBE_COOKIE : "
+  let cleanedCookie = rawCookie.replace(/^(YOUTUBE_COOKIE\s*:\s*)/i, '');
+  if (cleanedCookie.startsWith('"') && cleanedCookie.endsWith('"')) {
+    cleanedCookie = cleanedCookie.slice(1, -1);
+  }
+
   const header = "# Netscape HTTP Cookie File\n# http://curl.haxx.se/rfc/cookie_spec.html\n# This is a generated file! Do not edit.\n\n";
-  const lines = rawCookie.split(';').map(cookie => {
+  const lines = cleanedCookie.split(';').map(cookie => {
     const parts = cookie.trim().split('=');
-    const name = parts[0];
-    const value = parts.slice(1).join('=');
-    if (!name) return '';
+    const name = parts[0]?.trim();
+    const value = parts.slice(1).join('=').trim();
+    if (!name || !value) return '';
     return `.youtube.com\tTRUE\t/\tTRUE\t2147483647\t${name}\t${value}`;
   }).filter(line => line.length > 0).join('\n');
   
   fs.writeFileSync(COOKIE_FILE_PATH, header + lines);
-  console.log('Successfully generated Netscape cookie file for yt-dlp.');
+  console.log('Successfully generated Netscape cookie file for yt-dlp. Total cookies parsed:', lines.split('\n').length);
 }
 
 async function startServer() {
@@ -43,12 +49,46 @@ async function startServer() {
       noCheckCertificate: true,
       youtubeSkipDashManifest: true,
       extractorArgs: 'youtube:player_client=android_creator,android,tv,web',
+      forceIpv6: true,
     };
     if (fs.existsSync(COOKIE_FILE_PATH)) {
       options.cookies = COOKIE_FILE_PATH;
     }
     return options;
   };
+
+  // API Route to debug the environment and cookie parsing
+  app.get('/api/test-env', async (req, res) => {
+    try {
+      const rawCookie = process.env.YOUTUBE_COOKIE || '';
+      let parsedNames: string[] = [];
+      let ytDlpVersion = 'Unknown';
+      
+      if (fs.existsSync(COOKIE_FILE_PATH)) {
+        const fileContents = fs.readFileSync(COOKIE_FILE_PATH, 'utf-8');
+        parsedNames = fileContents.split('\n')
+          .filter(line => !line.startsWith('#') && line.trim().length > 0)
+          .map(line => line.split('\t')[5]); // The name column in Netscape format
+      }
+
+      try {
+        const { stdout } = await youtubedl.exec('--version');
+        ytDlpVersion = stdout.trim();
+      } catch (e: any) {
+        ytDlpVersion = `Error: ${e.message}`;
+      }
+
+      res.json({
+        rawCookieLength: rawCookie.length,
+        hasRawCookie: rawCookie.length > 0,
+        parsedCookieNames: parsedNames,
+        cookieFileExists: fs.existsSync(COOKIE_FILE_PATH),
+        ytDlpVersion: ytDlpVersion,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // API Route to fetch video info
   app.get('/api/info', async (req, res) => {
