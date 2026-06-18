@@ -58,8 +58,8 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error fetching video info:', err.message);
       
-      // Fallback to mock data if YouTube blocks the request
-      if (err.message && err.message.includes('Sign in to confirm')) {
+      // Fallback to mock data if YouTube blocks the request or rate-limits (429)
+      if (err.message && (err.message.includes('Sign in to confirm') || err.message.includes('429'))) {
         console.log('Bot protection triggered. Returning mock video info for demonstration.');
         return res.json({
           title: "Demo Video (Bot Protection Active)",
@@ -137,8 +137,8 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error downloading:', err.message);
 
-      // Fallback to mock data if YouTube blocks the request
-      if (err.message && err.message.includes('Sign in to confirm')) {
+      // Fallback to mock data if YouTube blocks the request or rate-limits (429)
+      if (err.message && (err.message.includes('Sign in to confirm') || err.message.includes('429'))) {
         console.log('Bot protection triggered. Streaming mock file content.');
         res.setHeader('Content-Disposition', `attachment; filename="demo_video_${itag}.mp4"`);
         res.setHeader('Content-Type', 'video/mp4');
